@@ -1,52 +1,65 @@
 import os
 import re
+import json
 from pyrogram import Client, filters
 
-# ---- Configuration ----
+# --- Config from environment variables ---
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
 API_ID = int(os.environ.get("API_ID"))
 API_HASH = os.environ.get("API_HASH")
-TARGET_CHANNEL = os.environ.get("TARGET_CHANNEL")  # e.g., "@yourchannel"
-OWNER_ID = int(os.environ.get("OWNER_ID"))  # Your Telegram user ID
+OWNER_ID = int(os.environ.get("OWNER_ID"))
+TARGET_CHANNEL = os.environ.get("TARGET_CHANNEL")
+TEMPLATE_FILE = "templates.json"  # File to store templates
 
-TEMPLATES_ENV = os.environ.get("TEMPLATES_TO_REMOVE", "")
-TEMPLATES_TO_REMOVE = [tmpl.strip() for tmpl in TEMPLATES_ENV.split(",") if tmpl.strip()]
+# --- Load and Save Templates ---
+def load_templates():
+    if os.path.exists(TEMPLATE_FILE):
+        try:
+            with open(TEMPLATE_FILE, "r") as f:
+                return json.load(f)
+        except:
+            return []
+    return []
 
-# ---- Initialize Bot ----
-app = Client(
-    "template_remover_bot",
-    bot_token=BOT_TOKEN,
-    api_id=API_ID,
-    api_hash=API_HASH,
-)
+def save_templates(templates):
+    with open(TEMPLATE_FILE, "w") as f:
+        json.dump(templates, f)
 
-# ---- Filename Cleanup ----
-def clean_filename(filename):
+TEMPLATES_TO_REMOVE = load_templates()
+
+# --- Initialize bot ---
+app = Client("template_renamer", bot_token=BOT_TOKEN, api_id=API_ID, api_hash=API_HASH)
+
+# --- Utility function: clean filename templates ---
+def clean_filename(name):
     for template in TEMPLATES_TO_REMOVE:
-        filename = filename.replace(template, "")
-    filename = re.sub(r"[\s_-]+", " ", filename).strip()
-    return filename
+        name = name.replace(template, "")
+    name = re.sub(r"[\s_-]+", " ", name).strip()
+    return name
 
-# ---- File Handler ----
-@app.on_message(filters.private & (filters.document | filters.video | filters.audio))
-async def rename_and_send(client, message):
-    if message.from_user.id != OWNER_ID:
-        await message.reply_text("❌ Access denied. You're not authorized to use this bot.")
+# --- Restrict access ---
+def is_authorized(user_id):
+    return user_id == OWNER_ID
+
+# --- Handle files ---
+@app.on_message(filters.private & (filters.document | filters.audio | filters.video))
+async def handle_file(client, message):
+    if not is_authorized(message.from_user.id):
+        await message.reply_text("❌ Access denied.")
         return
 
-    media = message.document or message.video or message.audio
-    old_name = media.file_name if media and media.file_name else None
-
-    if not old_name:
-        await message.reply_text("Couldn't detect filename.")
+    media = message.document or message.audio or message.video
+    if not media or not media.file_name:
+        await message.reply_text("❌ Error: No filename found.")
         return
 
+    old_name = media.file_name
     new_name = clean_filename(old_name)
-    downloaded_path = await message.download(file_name=new_name)
+    downloaded = await message.download(file_name=new_name)
 
     # Send to user
     await message.reply_document(
-        document=downloaded_path,
+        document=downloaded,
         file_name=new_name,
         caption=f"✅ Renamed:\n`{old_name}` ➜ `{new_name}`"
     )
@@ -56,55 +69,83 @@ async def rename_and_send(client, message):
         try:
             await client.send_document(
                 chat_id=TARGET_CHANNEL,
-                document=downloaded_path,
+                document=downloaded,
                 file_name=new_name,
-                caption=f"`{new_name}` uploaded by bot"
+                caption=f"`{new_name}` uploaded via bot."
             )
         except Exception as e:
-            await message.reply_text(f"❌ Failed to send to channel: {e}")
+            await message.reply_text(f"⚠️ Failed to send to channel: {e}")
 
-    os.remove(downloaded_path)
+    os.remove(downloaded)
 
-# ---- /templates Command ----
-@app.on_message(filters.command("templates"))
-async def show_templates(client, message):
-    if message.from_user.id != OWNER_ID:
-        await message.reply_text("❌ Access denied.")
-        return
-
-    if TEMPLATES_TO_REMOVE:
-        templates = "\n".join(f"- `{t}`" for t in TEMPLATES_TO_REMOVE)
-        await message.reply_text(f"Currently removing templates:\n{templates}")
-    else:
-        await message.reply_text("No templates set in `TEMPLATES_TO_REMOVE` env variable.")
-
-# ---- /start Command ----
+# --- /start ---
 @app.on_message(filters.command("start"))
-async def start(client, message):
-    if message.from_user.id != OWNER_ID:
-        await message.reply_text("❌ Access denied.")
+async def start_cmd(client, message):
+    if not is_authorized(message.from_user.id):
         return
-
     await message.reply_text(
-        "👋 Hi! Send me a file and I’ll remove defined templates from the filename, send it back"
-        " to you and forward it to the target channel."
+        "👋 Welcome! Send me a file and I’ll clean its name using the active templates.\n"
+        "Use /templates to check or update filters."
     )
 
-# ---- Optional Flask (for Koyeb health check) ----
+# --- /templates ---
+@app.on_message(filters.command("templates"))
+async def list_templates(client, message):
+    if not is_authorized(message.from_user.id):
+        return
+    if TEMPLATES_TO_REMOVE:
+        text = "🧹 Current templates being removed:\n" + "\n".join(f"- `{t}`" for t in TEMPLATES_TO_REMOVE)
+    else:
+        text = "No templates set yet."
+    await message.reply_text(text)
+
+# --- /addtemplate <template> ---
+@app.on_message(filters.command("addtemplate"))
+async def add_template(client, message):
+    if not is_authorized(message.from_user.id):
+        return
+    if len(message.command) < 2:
+        await message.reply_text("Usage: /addtemplate <text>")
+        return
+    template = " ".join(message.command[1:])
+    if template in TEMPLATES_TO_REMOVE:
+        await message.reply_text("Already exists.")
+        return
+    TEMPLATES_TO_REMOVE.append(template)
+    save_templates(TEMPLATES_TO_REMOVE)
+    await message.reply_text(f"✅ Template `{template}` added.")
+
+# --- /removetemplate <template> ---
+@app.on_message(filters.command("removetemplate"))
+async def remove_template(client, message):
+    if not is_authorized(message.from_user.id):
+        return
+    if len(message.command) < 2:
+        await message.reply_text("Usage: /removetemplate <text>")
+        return
+    template = " ".join(message.command[1:])
+    if template not in TEMPLATES_TO_REMOVE:
+        await message.reply_text("Not found.")
+        return
+    TEMPLATES_TO_REMOVE.remove(template)
+    save_templates(TEMPLATES_TO_REMOVE)
+    await message.reply_text(f"✅ Template `{template}` removed.")
+
+# --- Optional: Flask dummy web server for Koyeb health check ---
 if os.environ.get("PORT"):
     from flask import Flask
     from threading import Thread
 
-    web_app = Flask("healthcheck")
+    app_web = Flask(__name__)
 
-    @web_app.route("/")
-    def index():
-        return "Bot Alive", 200
+    @app_web.route("/")
+    def home():
+        return "Bot is live", 200
 
     def run_web():
-        web_app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 8080)))
+        app_web.run(host="0.0.0.0", port=int(os.environ.get("PORT", 8080)))
 
     Thread(target=run_web).start()
 
-# ---- Run Bot ----
+# --- Run bot ---
 app.run()
