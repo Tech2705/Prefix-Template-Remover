@@ -1,15 +1,15 @@
 import os
 import re
 import json
-from pyrogram import Client, filters
+from pyrogram import Client, filters, enums
 
 # ---- Configuration from Environment ----
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
 API_ID = int(os.environ.get("API_ID"))
 API_HASH = os.environ.get("API_HASH")
-OWNER_ID = int(os.environ.get("OWNER_ID"))  # Your Telegram ID
-TARGET_CHANNEL = os.environ.get("TARGET_CHANNEL")  # Channel username or -100 ID
-TEMPLATE_FILE = "templates.json"  # File to keep templates
+OWNER_ID = int(os.environ.get("OWNER_ID"))
+TARGET_CHANNEL = os.environ.get("TARGET_CHANNEL")
+TEMPLATE_FILE = "templates.json"
 
 # ---- Load & Save Templates ----
 def load_templates():
@@ -28,12 +28,7 @@ def save_templates(templates):
 TEMPLATES_TO_REMOVE = load_templates()
 
 # ---- Initialize Bot ----
-app = Client(
-    "template_remover_bot",
-    bot_token=BOT_TOKEN,
-    api_id=API_ID,
-    api_hash=API_HASH,
-)
+app = Client("template_remover_bot", bot_token=BOT_TOKEN, api_id=API_ID, api_hash=API_HASH)
 
 # ---- Utility ----
 def is_authorized(user_id):
@@ -61,18 +56,16 @@ async def handle_file(client, message):
     new_name = clean_filename(old_name)
     downloaded = await message.download(file_name=new_name)
 
-    # Reply to user
     await message.reply_document(
         document=downloaded,
         file_name=new_name,
         caption=f"✅ Renamed:\n`{old_name}` ➜ `{new_name}`"
     )
 
-    # Send to channel
     if TARGET_CHANNEL:
         try:
             await client.send_document(
-                chat_id=TARGET_CHANNEL,
+                chat_id=int(TARGET_CHANNEL),
                 document=downloaded,
                 file_name=new_name,
                 caption=f"`{new_name}` uploaded via bot."
@@ -82,7 +75,7 @@ async def handle_file(client, message):
 
     os.remove(downloaded)
 
-# ---- Command: /start ----
+# ---- /start Command ----
 @app.on_message(filters.command("start"))
 async def start_cmd(client, message):
     if not is_authorized(message.from_user.id):
@@ -91,21 +84,21 @@ async def start_cmd(client, message):
         "**Prefix/Template Remover:**\n"
         "👋 Welcome! Send me a file and I’ll clean its name using the active templates.\n"
         "Use /templates to check or update filters.",
-        parse_mode="markdown"
+        parse_mode=enums.ParseMode.MARKDOWN
     )
 
-# ---- Command: /templates ----
+# ---- /templates Command ----
 @app.on_message(filters.command("templates"))
 async def templates_cmd(client, message):
     if not is_authorized(message.from_user.id):
         return
     if TEMPLATES_TO_REMOVE:
         templates = "\n".join(f"- `{item}`" for item in TEMPLATES_TO_REMOVE)
-        await message.reply_text(f"**Current templates:**\n{templates}", parse_mode="markdown")
+        await message.reply_text(f"**Current templates:**\n{templates}", parse_mode=enums.ParseMode.MARKDOWN)
     else:
-        await message.reply_text("No templates set yet.")
+        await message.reply_text("No templates set.")
 
-# ---- Command: /addtemplate ----
+# ---- /addtemplate Command ----
 @app.on_message(filters.command("addtemplate"))
 async def add_template(client, message):
     if not is_authorized(message.from_user.id):
@@ -115,13 +108,13 @@ async def add_template(client, message):
         return
     template = " ".join(message.command[1:])
     if template in TEMPLATES_TO_REMOVE:
-        await message.reply_text(f"`{template}` already exists.", parse_mode="markdown")
+        await message.reply_text(f"`{template}` already exists.", parse_mode=enums.ParseMode.MARKDOWN)
         return
     TEMPLATES_TO_REMOVE.append(template)
     save_templates(TEMPLATES_TO_REMOVE)
-    await message.reply_text(f"✅ Template `{template}` added.", parse_mode="markdown")
+    await message.reply_text(f"✅ Template `{template}` added.", parse_mode=enums.ParseMode.MARKDOWN)
 
-# ---- Command: /removetemplate ----
+# ---- /removetemplate Command ----
 @app.on_message(filters.command("removetemplate"))
 async def remove_template(client, message):
     if not is_authorized(message.from_user.id):
@@ -131,29 +124,28 @@ async def remove_template(client, message):
         return
     template = " ".join(message.command[1:])
     if template not in TEMPLATES_TO_REMOVE:
-        await message.reply_text(f"`{template}` not found.", parse_mode="markdown")
+        await message.reply_text(f"`{template}` not found.", parse_mode=enums.ParseMode.MARKDOWN)
         return
     TEMPLATES_TO_REMOVE.remove(template)
     save_templates(TEMPLATES_TO_REMOVE)
-    await message.reply_text(f"✅ Template `{template}` removed.", parse_mode="markdown")
+    await message.reply_text(f"✅ Template `{template}` removed.", parse_mode=enums.ParseMode.MARKDOWN)
 
-# ---- Command: /help ----
+# ---- /help Command ----
 @app.on_message(filters.command("help"))
 async def help_cmd(client, message):
     if not is_authorized(message.from_user.id):
         return
     await message.reply_text(
         "**Template Management Help**\n\n"
-        "Use these commands to manage templates used for filename cleaning:\n\n"
         "`/templates` — List current templates.\n"
         "`/addtemplate <text>` — Add a new removal template.\n"
         "`/removetemplate <text>` — Remove existing template.\n"
         "`/help` — Show this help message.\n\n"
-        "_Only you can use these commands._",
-        parse_mode="markdown"
+        "_Only the owner can use these commands._",
+        parse_mode=enums.ParseMode.MARKDOWN
     )
 
-# ---- Optional Web Server for Koyeb Health Check ----
+# ---- Koyeb Health Check Server (optional) ----
 if os.environ.get("PORT"):
     from flask import Flask
     from threading import Thread
@@ -162,13 +154,12 @@ if os.environ.get("PORT"):
 
     @app_web.route("/")
     def root():
-        return "Bot is running", 200
+        return "Bot running", 200
 
-    def run_server():
+    def run_web():
         app_web.run(host="0.0.0.0", port=int(os.environ.get("PORT", 8080)))
 
-    Thread(target=run_server).start()
+    Thread(target=run_web).start()
 
 # ---- Run the Bot ----
 app.run()
-    
